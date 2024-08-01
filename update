@@ -1,0 +1,5 @@
+#!/bin/bash
+mosdns_working_dir="."
+curl https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/china-list.txt >$mosdns_working_dir/china-list.txt && curl https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/gfw.txt >$mosdns_working_dir/gfw.txt && curl https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/proxy-list.txt >$mosdns_working_dir/proxy-list.txt && curl https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/reject-list.txt >$mosdns_working_dir/reject-list.txt && echo 'update domain list successfully'
+curl https://cdn.jsdelivr.net/gh/Loyalsoldier/geoip@release/text/cn.txt >$mosdns_working_dir/cn.txt && curl https://cdn.jsdelivr.net/gh/Loyalsoldier/geoip@release/text/private.txt >$mosdns_working_dir/lan.txt && echo 'update ip list successfully'
+curl https://cdn.jsdelivr.net/gh/Loyalsoldier/geoip@release/text/fastly.txt >$mosdns_working_dir/fastlyip.txt && curl https://cdn.jsdelivr.net/gh/SecOps-Institute/Akamai-ASN-and-IPs-List@master/akamai_ip_list.lst >$mosdns_working_dir/akamai_ip.txt && cat ./akamai_ip.txt ./fastlyip.txt | sort -u >./CDN_not_follow_ecs.txt && echo 'update CDN_not_follow_ecs successfully'

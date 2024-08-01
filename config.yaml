@@ -1,0 +1,233 @@
+log:
+  level: info
+  file: "/etc/mosdns/mosdns.log"
+
+plugins:
+  # Fetch domain name list from v2ray-rules-dat
+  # https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/china-list.txt
+  # https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/china-list.txt
+  - tag: cn_domain_list
+    type: "domain_set"
+    args:
+      files:
+        - "./china-list.txt"
+
+  # Fetch domain name list which could be accessed directly from v2ray-rules-dat
+  # https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/direct-list.txt
+  # https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/direct-list.txt
+  - tag: direct_list
+    type: "domain_set"
+    args:
+      files:
+        - "./direct-list.txt"
+
+  # Fetch domain name list blocked by gfw from v2ray-rules-dat
+  # https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/gfw.txt
+  # https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/gfw.txt
+  - tag: gfw_domain_list
+    type: "domain_set"
+    args:
+      files:
+        - "./gfw.txt"
+
+  # Fetch domain name list which require proxy from v2ray-rules-dat
+  # https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/proxy-list.txt
+  # https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/proxy-list.txt
+  - tag: proxy_domain_list
+    type: "domain_set"
+    args:
+      files:
+        - "./proxy-list.txt"
+
+  # https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/reject-list.txt
+  # https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/reject-list.txt
+  - tag: reject_domain_list
+    type: "domain_set"
+    args:
+      files:
+        - "./reject-list.txt"
+
+
+  # CN ip list
+  # https://raw.githubusercontent.com/Loyalsoldier/geoip/release/text/cn.txt
+  # https://cdn.jsdelivr.net/gh/Loyalsoldier/geoip@release/text/cn.txt
+  - tag: cn_ip_list
+    type: "ip_set"
+    args:
+      files:
+        - "./cn.txt"
+
+  # LAN ip list
+  - tag: lan_ip_list
+    type: "ip_set"
+    args:
+      files:
+        - "./lan.txt"
+
+  # 自定义hosts
+  - tag: hosts
+    type: hosts
+    args:
+      files:
+        - "./hosts"
+
+  # Cache
+  - tag: cache_lan
+    type: cache
+    args:
+      size: 8192
+      lazy_cache_ttl: 86400
+  - tag: cache_wan
+    type: cache
+    args:
+      size: 10240
+      lazy_cache_ttl: 86400
+
+  # 
+  - tag: has_resp_sequence
+    type: sequence
+    args:
+      - matches: qname $proxy_domain_list
+        exec: ttl 360-86400
+      - matches: qname $reject_domain_list
+        exec: ttl 3600
+      - matches: has_resp
+        exec: accept
+
+  # Forward requests to alidns and dnspod
+  - tag: china_dns
+    type: forward
+    args:
+      concurrent: 2
+      upstreams:
+        - tag: alidns_dot
+          addr: "tls://dns.alidns.com"
+          dial_addr: "223.5.5.5"
+          enable_pipeline: true
+          insecure_skip_verify: false
+
+        - tag: dnspod_dot
+          addr: "tls://dot.pub"
+          dial_addr: "1.12.12.12"
+          enable_pipeline: true
+          insecure_skip_verify: false
+
+  - tag: query_global_dns
+    type: sequence
+    args:
+      - exec: china_dns
+
+  # Forward requests to google dns and cloudflare dns
+  - tag: global_dns
+    type: forward
+    args:
+      concurrent: 2
+      upstreams:
+        - tag: google_doh
+          addr: "tls://8.8.8.8"
+          dial_addr: "8.8.8.8"
+          enable_http3: true
+          insecure_skip_verify: false
+
+        - tag: cloudflare_doh
+          addr: "tls://1.1.1.1"
+          dial_addr: "1.1.1.1"
+          enable_http3: true
+          insecure_skip_verify: false
+
+  - tag: query_global_dns
+    type: sequence
+    args:
+      - exec: prefer_ipv4
+      - exec: ecs 119.167.219.177 # use local isp address here.
+      - exec: global_dns
+
+  # Forward requests to local clash dns
+  - tag: query_clash_dns
+    type: forward
+    args:
+      upstreams:
+        - addr: 192.168.1.10:5553
+
+  # fallback sequence
+  - tag: fallback
+    type: sequence
+    args:
+      - exec: $query_global_dns
+      - matches: rcode 2
+        exec: goto query_china_dns
+      - matches: resp_ip $cn_ip_list
+        exec: goto query_china_dns
+      - exec: jump has_resp_sequence
+
+  # Main resovle process
+  - tag: resolve_process
+    type: sequence
+    args:
+      # Use local host mapping first
+      - exec: $hosts
+      - exec: jump has_resp_sequence
+
+      # Reject TYPE HTTPS (TYPE65)
+      - matches: qtype 65
+        exec: reject 3
+
+      # 优化PRT与ANY类型请求
+      - matches: qtype 12
+        exec: $query_china_dns
+      - matches: qtype 12
+        exec: ttl 3600-86400
+      - matches: qtype 255
+        exec: $query_china_dns
+      - matches: qtype 255
+        exec: ttl 3600-86400
+      - exec: jump has_resp_sequence
+
+      # Cache
+      - matches: resp_ip $lan_ip_list
+        exec: $cache_lan
+      - matches: "!resp_ip $lan_ip_list"
+        exec: $cache_wan
+      - exec: jump has_resp_sequence
+
+      # Use alidns & dnspod for china domain list
+      - matches: qname $cn_domain_list
+        exec: $query_china_dns
+      - exec: jump has_resp_sequence
+
+      # Use alidns & dnspod for direct list
+      - matches: qname $direct_list
+        exec: $query_china_dns
+      - exec: jump has_resp_sequence
+
+      # Use google & cloudflare for proxy domain list
+      - matches: qname $proxy_domain_list
+        exec: $query_global_dns
+      - exec: jump has_resp_sequence
+
+      # Reject requests from reject domain list
+      - matches: qname $reject_domain_list
+        exec: black_hole 0.0.0.0
+      - exec: jump has_resp_sequence
+
+      # Use google & cloudflare for gfw domain list
+      - matches: qname $gfw_domain_list
+        exec: $query_global_dns
+      - exec: jump has_resp_sequence
+
+      # For all the other cases
+      - exec: $fallback
+
+
+  # Start mosdns service
+  - tag: udp_server
+    type: udp_server
+    args:
+      entry: resolve_process
+      listen: :5335
+
+  - tag: tcp_server
+    type: tcp_server
+    args:
+      entry: resolve_process
+      listen: :5335
