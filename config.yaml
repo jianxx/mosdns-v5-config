@@ -47,7 +47,6 @@ plugins:
       files:
         - "./reject-list.txt"
 
-
   # CN ip list
   # https://raw.githubusercontent.com/Loyalsoldier/geoip/release/text/cn.txt
   # https://cdn.jsdelivr.net/gh/Loyalsoldier/geoip@release/text/cn.txt
@@ -56,6 +55,15 @@ plugins:
     args:
       files:
         - "./cn.txt"
+
+  # CDN ip list which does not follow ECS
+  # https://cdn.jsdelivr.net/gh/Loyalsoldier/geoip@release/text/fastly.txt
+  # https://cdn.jsdelivr.net/gh/SecOps-Institute/Akamai-ASN-and-IPs-List@master/akamai_ip_list.lst
+  - tag: cdn_not_follow_ecs_ip_list
+    type: "ip_set"
+    args:
+      files:
+        - "./CDN_not_follow_ecs.txt"
 
   # LAN ip list
   - tag: lan_ip_list
@@ -83,7 +91,7 @@ plugins:
       size: 10240
       lazy_cache_ttl: 86400
 
-  # 
+  #
   - tag: has_resp_sequence
     type: sequence
     args:
@@ -112,35 +120,51 @@ plugins:
           enable_pipeline: true
           insecure_skip_verify: false
 
-  - tag: query_global_dns
+  - tag: query_china_dns
     type: sequence
     args:
-      - exec: china_dns
+      - exec: $china_dns
 
   # Forward requests to google dns and cloudflare dns
-  - tag: global_dns
+  - tag: google_dns
     type: forward
     args:
       concurrent: 2
       upstreams:
-        - tag: google_doh
+        - tag: google_primary_dot
           addr: "tls://8.8.8.8"
           dial_addr: "8.8.8.8"
+          socks5: "127.0.0.1:7891"
           enable_http3: true
+          enable_pipeline: true
           insecure_skip_verify: false
 
-        - tag: cloudflare_doh
+        - tag: google_secondary_dot
+          addr: "tls://8.8.4.4"
+          dial_addr: "8.8.4.4"
+          socks5: "127.0.0.1:7891"
+          enable_http3: true
+          enable_pipeline: true
+          insecure_skip_verify: false
+
+  - tag: cloudflare_dns
+    type: forward
+    args:
+      concurrent: 2
+      upstreams:
+        - tag: cloudflare_primary_dot
           addr: "tls://1.1.1.1"
           dial_addr: "1.1.1.1"
+          socks5: "127.0.0.1:7891"
           enable_http3: true
           insecure_skip_verify: false
 
-  - tag: query_global_dns
-    type: sequence
-    args:
-      - exec: prefer_ipv4
-      - exec: ecs 119.167.219.177 # use local isp address here.
-      - exec: global_dns
+        - tag: cloudflare_secondary_dot
+          addr: "tls://1.0.0.1"
+          dial_addr: "1.0.0.1"
+          socks5: "127.0.0.1:7891"
+          enable_http3: true
+          insecure_skip_verify: false
 
   # Forward requests to local clash dns
   - tag: query_clash_dns
@@ -149,13 +173,38 @@ plugins:
       upstreams:
         - addr: 192.168.1.10:5553
 
+  - tag: query_global_dns
+    type: sequence
+    args:
+      - exec: prefer_ipv4
+      - exec: ecs 114.246.108.58 # use local isp address here.
+      - exec: $query_clash_dns
+
+  - tag: query_google_dns
+    type: sequence
+    args:
+      - exec: prefer_ipv4
+      - exec: ecs 114.246.108.58 # use local isp address here.
+      - exec: $google_dns
+
+  - tag: query_cloudflare_dns
+    type: sequence
+    args:
+      - exec: prefer_ipv4
+      - exec: ecs 114.246.108.58 # use local isp address here.
+      - exec: $cloudflare_dns
+
   # fallback sequence
   - tag: fallback
     type: sequence
     args:
-      - exec: $query_global_dns
+      - exec: $query_google_dns
       - matches: rcode 2
         exec: goto query_china_dns
+      - matches:
+        - resp_ip $cdn_not_follow_ecs_ip_list
+        - "!resp_ip $cn_ip_list"
+        exec: $query_cloudflare_dns
       - matches: resp_ip $cn_ip_list
         exec: goto query_china_dns
       - exec: jump has_resp_sequence
@@ -217,7 +266,6 @@ plugins:
 
       # For all the other cases
       - exec: $fallback
-
 
   # Start mosdns service
   - tag: udp_server
